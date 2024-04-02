@@ -1,5 +1,5 @@
-# gundi-integration-action-runner
-Template repo for integration in Gundi v2.
+# gundi-integration-savannahtracking
+This repository is a Gundi Action Runner implementation for integration with Savannah Tracking.
 
 ## Usage
 - Fork this repo
