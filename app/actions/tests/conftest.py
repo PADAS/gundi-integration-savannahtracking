@@ -94,6 +94,7 @@ def mock_state_manager_empty(mocker):
     mock_state_manager.get_state.return_value = async_return({})
     mock_state_manager.set_state.return_value = async_return(None)
     mock_state_manager.set_if_absent.return_value = async_return(True)
+    mock_state_manager.delete_state.return_value = async_return(None)
     return mock_state_manager
 
 

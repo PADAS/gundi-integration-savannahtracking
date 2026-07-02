@@ -113,12 +113,16 @@ async def test_action_read_observations_per_collar_sends_observations(
     now = datetime.now(tz=timezone.utc)
     page_one = [make_record(101, now - timedelta(hours=3)), make_record(102, now - timedelta(hours=2))]
     page_two = [make_record(103, now - timedelta(hours=1))]
-    mock_get_collar_data_page = AsyncMock(side_effect=[(page_one, True), (page_two, False)])
+    mock_get_collar_data_page = AsyncMock(side_effect=[(page_one, True, 102), (page_two, False, 103)])
     mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
     mock_send_observations = AsyncMock(return_value=[{"object_id": "test"}])
     mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
-    from app.actions.handlers import action_read_observations_per_collar
+    from app.actions.handlers import (
+        action_read_observations_per_collar,
+        BACKOFF_STATE_ACTION_ID,
+        LOCK_STATE_ACTION_ID,
+    )
 
     result = await action_read_observations_per_collar(
         savannah_integration,
@@ -131,17 +135,33 @@ async def test_action_read_observations_per_collar_sends_observations(
     assert mock_get_collar_data_page.call_args_list[0].kwargs["record_index"] == -1
     # Second page resumes from the highest index seen
     assert mock_get_collar_data_page.call_args_list[1].kwargs["record_index"] == 102
-    observations = mock_send_observations.call_args.kwargs["observations"]
+    observations = [
+        observation
+        for call in mock_send_observations.call_args_list
+        for observation in call.kwargs["observations"]
+    ]
     assert [o["source"] for o in observations] == ["ST2010-3034"] * 3
     assert observations[0]["type"] == "tracking-device"
     assert observations[0]["subject_type"] == "unassigned"
     assert observations[0]["location"] == {"lat": -1.2921, "lon": 36.8219}
     assert observations[0]["additional"]["record_index"] == 101
-    # The watermark is persisted
-    set_state_call = mock_state_manager_empty.set_state.call_args
-    assert set_state_call.args[2]["record_index"] == 103
+    # The watermark is checkpointed after every page, so an interrupted
+    # backfill resumes where it left off
+    watermark_indices = [c.args[2]["record_index"] for c in mock_state_manager_empty.set_state.call_args_list]
+    assert watermark_indices == [102, 103]
     # No backoff for an active collar
-    mock_state_manager_empty.set_if_absent.assert_not_called()
+    backoff_calls = [
+        c for c in mock_state_manager_empty.set_if_absent.call_args_list
+        if c.args[1] == BACKOFF_STATE_ACTION_ID
+    ]
+    assert not backoff_calls
+    # The per-collar lock is taken and released
+    lock_calls = [
+        c for c in mock_state_manager_empty.set_if_absent.call_args_list
+        if c.args[1] == LOCK_STATE_ACTION_ID
+    ]
+    assert len(lock_calls) == 1
+    assert mock_state_manager_empty.delete_state.call_args.args[1] == LOCK_STATE_ACTION_ID
 
 
 @pytest.mark.asyncio
@@ -151,7 +171,7 @@ async def test_action_read_observations_per_collar_with_custom_subject_type(
     now = datetime.now(tz=timezone.utc)
     mocker.patch(
         "app.actions.handlers.client.get_collar_data_page",
-        AsyncMock(return_value=([make_record(101, now)], False)),
+        AsyncMock(return_value=([make_record(101, now)], False, 101)),
     )
     mock_send_observations = AsyncMock()
     mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
@@ -176,7 +196,7 @@ async def test_action_read_observations_per_collar_resumes_from_watermark(
         async_return({}),  # No backoff
         async_return({"record_index": 500, "latest_timestamp": now.isoformat()}),
     ]
-    mock_get_collar_data_page = AsyncMock(return_value=([make_record(501, now)], False))
+    mock_get_collar_data_page = AsyncMock(return_value=([make_record(501, now)], False, 501))
     mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
     mocker.patch("app.actions.handlers.send_observations_to_gundi", AsyncMock())
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
@@ -191,12 +211,39 @@ async def test_action_read_observations_per_collar_resumes_from_watermark(
 
 
 @pytest.mark.asyncio
-async def test_action_read_observations_per_collar_stops_on_unparseable_page(
+async def test_action_read_observations_per_collar_fails_loudly_when_index_cannot_advance(
         mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
 ):
-    # An empty page with has_more_records=True must not re-request the same
-    # index forever
-    mock_get_collar_data_page = AsyncMock(return_value=([], True))
+    # A page that reports more data but can't advance the index must fail
+    # loudly rather than silently report success and re-read the same page
+    # forever
+    mock_get_collar_data_page = AsyncMock(return_value=([], True, None))
+    mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
+    mock_send_observations = AsyncMock()
+    mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
+    mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
+    from app.actions.handlers import action_read_observations_per_collar, LOCK_STATE_ACTION_ID
+
+    with pytest.raises(client.SavannahApiException):
+        await action_read_observations_per_collar(
+            savannah_integration,
+            ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+        )
+
+    assert mock_get_collar_data_page.call_count == 1
+    mock_send_observations.assert_not_called()
+    # The lock is released even when the run fails
+    assert mock_state_manager_empty.delete_state.call_args.args[1] == LOCK_STATE_ACTION_ID
+
+
+@pytest.mark.asyncio
+async def test_action_read_observations_per_collar_advances_past_fully_invalid_page(
+        mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
+):
+    # A page where every record failed validation still advances the watermark
+    # on the raw record indices, so bad data can't wedge the collar
+    now = datetime.now(tz=timezone.utc)
+    mock_get_collar_data_page = AsyncMock(side_effect=[([], True, 105), ([make_record(106, now)], False, 106)])
     mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
     mock_send_observations = AsyncMock()
     mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
@@ -208,9 +255,31 @@ async def test_action_read_observations_per_collar_stops_on_unparseable_page(
         ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
     )
 
-    assert mock_get_collar_data_page.call_count == 1
-    assert result["observations_sent"] == 0
-    mock_send_observations.assert_not_called()
+    assert result["observations_extracted"] == 1
+    assert mock_get_collar_data_page.call_args_list[1].kwargs["record_index"] == 105
+    watermark_indices = [c.args[2]["record_index"] for c in mock_state_manager_empty.set_state.call_args_list]
+    assert watermark_indices == [105, 106]
+
+
+@pytest.mark.asyncio
+async def test_action_read_observations_per_collar_skips_when_another_run_holds_the_lock(
+        mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
+):
+    mock_state_manager_empty.set_if_absent.return_value = async_return(False)
+    mock_get_collar_data_page = AsyncMock()
+    mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
+    mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
+    from app.actions.handlers import action_read_observations_per_collar
+
+    result = await action_read_observations_per_collar(
+        savannah_integration,
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+    )
+
+    assert result["skipped"] is True
+    mock_get_collar_data_page.assert_not_called()
+    # The lock belongs to the other run, so this run must not release it
+    mock_state_manager_empty.delete_state.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -244,12 +313,12 @@ async def test_action_read_observations_per_collar_with_stale_records_sets_backo
     ]
     mocker.patch(
         "app.actions.handlers.client.get_collar_data_page",
-        AsyncMock(return_value=(stale_records, False)),
+        AsyncMock(return_value=(stale_records, False, 102)),
     )
     mock_send_observations = AsyncMock()
     mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
-    from app.actions.handlers import action_read_observations_per_collar
+    from app.actions.handlers import action_read_observations_per_collar, BACKOFF_STATE_ACTION_ID
 
     result = await action_read_observations_per_collar(
         savannah_integration,
@@ -261,9 +330,13 @@ async def test_action_read_observations_per_collar_with_stale_records_sets_backo
     observations = mock_send_observations.call_args.kwargs["observations"]
     assert observations[0]["additional"]["record_index"] == 102
     # A dormant-collar backoff is set with a ~21-27h TTL
-    set_if_absent_call = mock_state_manager_empty.set_if_absent.call_args
-    assert 76000 <= set_if_absent_call.kwargs["ttl_seconds"] <= 96000
-    assert set_if_absent_call.kwargs["source_id"] == "ST2010-3034"
+    backoff_calls = [
+        c for c in mock_state_manager_empty.set_if_absent.call_args_list
+        if c.args[1] == BACKOFF_STATE_ACTION_ID
+    ]
+    assert len(backoff_calls) == 1
+    assert 76000 <= backoff_calls[0].kwargs["ttl_seconds"] <= 96000
+    assert backoff_calls[0].kwargs["source_id"] == "ST2010-3034"
 
 
 @pytest.mark.asyncio
@@ -272,12 +345,12 @@ async def test_action_read_observations_per_collar_with_no_records(
 ):
     mocker.patch(
         "app.actions.handlers.client.get_collar_data_page",
-        AsyncMock(return_value=([], False)),
+        AsyncMock(return_value=([], False, None)),
     )
     mock_send_observations = AsyncMock()
     mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
-    from app.actions.handlers import action_read_observations_per_collar
+    from app.actions.handlers import action_read_observations_per_collar, BACKOFF_STATE_ACTION_ID
 
     result = await action_read_observations_per_collar(
         savannah_integration,
@@ -288,4 +361,48 @@ async def test_action_read_observations_per_collar_with_no_records(
     assert result["observations_sent"] == 0
     mock_send_observations.assert_not_called()
     mock_state_manager_empty.set_state.assert_not_called()
-    mock_state_manager_empty.set_if_absent.assert_not_called()
+    # No history at all: nothing to base a backoff on
+    backoff_calls = [
+        c for c in mock_state_manager_empty.set_if_absent.call_args_list
+        if c.args[1] == BACKOFF_STATE_ACTION_ID
+    ]
+    assert not backoff_calls
+
+
+@pytest.mark.asyncio
+async def test_action_read_observations_per_collar_rearms_backoff_on_empty_fetch_with_stale_history(
+        mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
+):
+    # After the first backoff TTL expires, a dormant collar keeps returning
+    # empty fetches; the stored latest_timestamp re-arms the backoff so the
+    # collar isn't polled at the full cadence forever
+    now = datetime.now(tz=timezone.utc)
+    mock_state_manager_empty.get_state.side_effect = [
+        async_return({}),  # No backoff
+        async_return({
+            "record_index": 500,
+            "latest_timestamp": (now - timedelta(days=10)).isoformat(),
+        }),
+    ]
+    mocker.patch(
+        "app.actions.handlers.client.get_collar_data_page",
+        AsyncMock(return_value=([], False, None)),
+    )
+    mock_send_observations = AsyncMock()
+    mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
+    mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
+    from app.actions.handlers import action_read_observations_per_collar, BACKOFF_STATE_ACTION_ID
+
+    result = await action_read_observations_per_collar(
+        savannah_integration,
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+    )
+
+    assert result["observations_extracted"] == 0
+    mock_send_observations.assert_not_called()
+    backoff_calls = [
+        c for c in mock_state_manager_empty.set_if_absent.call_args_list
+        if c.args[1] == BACKOFF_STATE_ACTION_ID
+    ]
+    assert len(backoff_calls) == 1
+    assert 76000 <= backoff_calls[0].kwargs["ttl_seconds"] <= 96000

@@ -79,7 +79,7 @@ async def test_get_collar_data_page_success():
         }
     )
 
-    records, has_more_records = await client.get_collar_data_page(
+    records, has_more_records, max_record_index = await client.get_collar_data_page(
         base_url=BASE_URL,
         username="testuser",
         password="testpassword",
@@ -88,6 +88,7 @@ async def test_get_collar_data_page_success():
     )
 
     assert has_more_records is True
+    assert max_record_index == 102
     assert [r.record_index for r in records] == [101, 102]
     # Naive timestamps are assumed to be UTC
     assert records[0].recorded_at.isoformat() == "2026-07-01T10:00:00+00:00"
@@ -127,7 +128,7 @@ async def test_get_collar_data_page_parses_us_style_timestamps():
         }
     )
 
-    records, _ = await client.get_collar_data_page(
+    records, _, _ = await client.get_collar_data_page(
         base_url=BASE_URL,
         username="testuser",
         password="testpassword",
@@ -147,23 +148,23 @@ async def test_get_collar_data_page_skips_invalid_records():
         json={
             "records": [
                 {
-                    "record_index": 101,
-                    "record_time": "not-a-date",
-                    "latitude": -1.2921,
-                    "longitude": 36.8219,
-                },
-                {
                     "record_index": 102,
                     "record_time": "2026-07-01 11:00:00",
                     "latitude": -1.2922,
                     "longitude": 36.8220,
+                },
+                {
+                    "record_index": 103,
+                    "record_time": "not-a-date",
+                    "latitude": -1.2921,
+                    "longitude": 36.8219,
                 },
             ],
             "has_more_records": False,
         }
     )
 
-    records, has_more_records = await client.get_collar_data_page(
+    records, has_more_records, max_record_index = await client.get_collar_data_page(
         base_url=BASE_URL,
         username="testuser",
         password="testpassword",
@@ -173,6 +174,8 @@ async def test_get_collar_data_page_skips_invalid_records():
 
     assert has_more_records is False
     assert [r.record_index for r in records] == [102]
+    # The raw index advances past invalid records too
+    assert max_record_index == 103
 
 
 @pytest.mark.asyncio
@@ -182,7 +185,7 @@ async def test_get_collar_data_page_with_empty_records():
         json={"records": [], "has_more_records": False}
     )
 
-    records, has_more_records = await client.get_collar_data_page(
+    records, has_more_records, max_record_index = await client.get_collar_data_page(
         base_url=BASE_URL,
         username="testuser",
         password="testpassword",
@@ -192,3 +195,98 @@ async def test_get_collar_data_page_with_empty_records():
 
     assert records == []
     assert has_more_records is False
+    assert max_record_index is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_iter_collar_pages_paginates_with_one_session():
+    def make_page(request):
+        if b"record_index=100" in request.content:
+            page = {
+                "records": [
+                    {"record_index": 101, "record_time": "2026-07-01 10:00:00", "latitude": -1.2921, "longitude": 36.8219},
+                ],
+                "has_more_records": True,
+            }
+        else:
+            page = {
+                "records": [
+                    {"record_index": 102, "record_time": "2026-07-01 11:00:00", "latitude": -1.2922, "longitude": 36.8220},
+                ],
+                "has_more_records": False,
+            }
+        return httpx.Response(200, json=page)
+
+    route = respx.post(f"{BASE_URL}{client.DATA_REQUEST_ENDPOINT}").mock(side_effect=make_page)
+
+    pages = [
+        (records, record_index)
+        async for records, record_index in client.iter_collar_pages(
+            base_url=BASE_URL,
+            username="testuser",
+            password="testpassword",
+            collar_id="ST2010-3034",
+            record_index=100,
+        )
+    ]
+
+    assert [(len(records), index) for records, index in pages] == [(1, 101), (1, 102)]
+    assert route.call_count == 2
+    assert b"record_index=101" in route.calls.last.request.content
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_iter_collar_pages_advances_past_fully_invalid_page():
+    def make_page(request):
+        if b"record_index=100" in request.content:
+            # A page where every record fails validation still carries raw indices
+            page = {
+                "records": [
+                    {"record_index": 101, "record_time": "not-a-date", "latitude": -1.2921, "longitude": 36.8219},
+                ],
+                "has_more_records": True,
+            }
+        else:
+            page = {
+                "records": [
+                    {"record_index": 102, "record_time": "2026-07-01 11:00:00", "latitude": -1.2922, "longitude": 36.8220},
+                ],
+                "has_more_records": False,
+            }
+        return httpx.Response(200, json=page)
+
+    route = respx.post(f"{BASE_URL}{client.DATA_REQUEST_ENDPOINT}").mock(side_effect=make_page)
+
+    pages = [
+        (records, record_index)
+        async for records, record_index in client.iter_collar_pages(
+            base_url=BASE_URL,
+            username="testuser",
+            password="testpassword",
+            collar_id="ST2010-3034",
+            record_index=100,
+        )
+    ]
+
+    assert [(len(records), index) for records, index in pages] == [(0, 101), (1, 102)]
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_iter_collar_pages_fails_loudly_when_index_cannot_advance():
+    respx.post(f"{BASE_URL}{client.DATA_REQUEST_ENDPOINT}").respond(
+        json={"records": [], "has_more_records": True}
+    )
+
+    with pytest.raises(client.SavannahApiException, match="no record_index to advance on"):
+        async for _ in client.iter_collar_pages(
+            base_url=BASE_URL,
+            username="testuser",
+            password="testpassword",
+            collar_id="ST2010-3034",
+            record_index=100,
+        ):
+            pass

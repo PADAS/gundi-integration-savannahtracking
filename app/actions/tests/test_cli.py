@@ -41,7 +41,7 @@ def test_data_command_paginates_and_prints_json_lines(mocker, capsys):
     now = datetime.now(tz=timezone.utc)
     page_one = [make_record(101, now - timedelta(hours=2))]
     page_two = [make_record(102, now - timedelta(hours=1))]
-    mock_get_collar_data_page = AsyncMock(side_effect=[(page_one, True), (page_two, False)])
+    mock_get_collar_data_page = AsyncMock(side_effect=[(page_one, True, 101), (page_two, False, 102)])
     mocker.patch("app.actions.cli.client.get_collar_data_page", mock_get_collar_data_page)
 
     exit_code = cli.main(["data", "ST2010-3034"])
@@ -59,7 +59,7 @@ def test_data_command_paginates_and_prints_json_lines(mocker, capsys):
 
 def test_data_command_with_record_index(mocker, capsys):
     now = datetime.now(tz=timezone.utc)
-    mock_get_collar_data_page = AsyncMock(return_value=([make_record(501, now)], False))
+    mock_get_collar_data_page = AsyncMock(return_value=([make_record(501, now)], False, 501))
     mocker.patch("app.actions.cli.client.get_collar_data_page", mock_get_collar_data_page)
 
     exit_code = cli.main(["data", "ST2010-3034", "--record-index", "500"])
@@ -76,7 +76,7 @@ def test_data_command_with_lookback_filter(mocker, capsys):
     ]
     mocker.patch(
         "app.actions.cli.client.get_collar_data_page",
-        AsyncMock(return_value=(records, False)),
+        AsyncMock(return_value=(records, False, 102)),
     )
 
     exit_code = cli.main(["data", "ST2010-3034", "--lookback-days", "3"])
@@ -84,6 +84,18 @@ def test_data_command_with_lookback_filter(mocker, capsys):
     assert exit_code == 0
     lines = capsys.readouterr().out.strip().splitlines()
     assert [json.loads(line)["record_index"] for line in lines] == [102]
+
+
+def test_data_command_fails_loudly_when_index_cannot_advance(mocker, capsys):
+    mocker.patch(
+        "app.actions.cli.client.get_collar_data_page",
+        AsyncMock(return_value=([], True, None)),
+    )
+
+    exit_code = cli.main(["data", "ST2010-3034"])
+
+    assert exit_code == 1
+    assert "no record_index to advance on" in capsys.readouterr().err
 
 
 def test_bad_credentials_exit_code(mocker, capsys):

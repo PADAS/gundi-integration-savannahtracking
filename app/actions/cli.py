@@ -67,20 +67,13 @@ async def run_data(
     if lookback_days is not None:
         min_date = datetime.now(tz=timezone.utc) - timedelta(days=lookback_days)
 
-    has_more_records = True
-    while has_more_records:
-        page, has_more_records = await client.get_collar_data_page(
-            base_url=base_url,
-            username=username,
-            password=password,
-            collar_id=collar_id,
-            record_index=record_index,
-        )
-        if page:
-            record_index = max(record.record_index for record in page)
-        elif has_more_records:
-            print(f"Got a page with no parseable records for collar {collar_id}. Stopping.", file=sys.stderr)
-            break
+    async for page, _ in client.iter_collar_pages(
+        base_url=base_url,
+        username=username,
+        password=password,
+        collar_id=collar_id,
+        record_index=record_index,
+    ):
         for record in page:
             if min_date and record.recorded_at < min_date:
                 continue
@@ -106,6 +99,9 @@ def main(argv=None) -> int:
     except client.SavannahBadCredentialsException as e:
         print(f"Authentication failed: {e}", file=sys.stderr)
         return 2
+    except client.SavannahApiException as e:
+        print(f"API error: {e}", file=sys.stderr)
+        return 1
     except httpx.HTTPError as e:
         print(f"Request failed: {e}", file=sys.stderr)
         return 1

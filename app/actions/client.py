@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import AsyncIterator, List, Optional, Tuple
 
 import httpx
 import pydantic
@@ -82,14 +82,19 @@ async def get_collar_list(*, base_url: str, username: str, password: str) -> Lis
 
 
 async def get_collar_data_page(
-    *, base_url: str, username: str, password: str, collar_id: str, record_index: int
-) -> Tuple[List[SavannahRecord], bool]:
+    *, base_url: str, username: str, password: str, collar_id: str, record_index: int,
+    session: Optional[httpx.AsyncClient] = None,
+) -> Tuple[List[SavannahRecord], bool, Optional[int]]:
     """
     Fetch one page of position records for a collar, starting after record_index.
-    Returns the parsed records and whether more pages are available.
+    Returns the parsed records, whether more pages are available, and the highest
+    record_index seen in the raw response — including records that failed
+    validation — so callers can advance past unparseable data.
+    Pass a session to reuse one connection across pages.
     """
-    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as session:
-        response = await session.post(
+    own_session = session or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
+    try:
+        response = await own_session.post(
             f"{base_url}{DATA_REQUEST_ENDPOINT}",
             data={
                 "request": "data_download",
@@ -99,12 +104,54 @@ async def get_collar_data_page(
                 "record_index": record_index,
             },
         )
+    finally:
+        if session is None:
+            await own_session.aclose()
     response.raise_for_status()
     result = response.json()
     records = []
+    max_record_index = None
     for raw_record in result.get("records") or []:
+        try:
+            raw_index = int(raw_record.get("record_index"))
+        except (AttributeError, TypeError, ValueError):
+            raw_index = None
+        if raw_index is not None:
+            max_record_index = raw_index if max_record_index is None else max(max_record_index, raw_index)
         try:
             records.append(SavannahRecord.parse_obj(raw_record))
         except pydantic.ValidationError as e:
             logger.warning(f"Skipping invalid record for collar {collar_id}: {e}. Record: {raw_record}")
-    return records, bool(result.get("has_more_records"))
+    return records, bool(result.get("has_more_records")), max_record_index
+
+
+async def iter_collar_pages(
+    *, base_url: str, username: str, password: str, collar_id: str, record_index: int
+) -> AsyncIterator[Tuple[List[SavannahRecord], int]]:
+    """
+    Page through a collar's records starting after record_index, reusing one
+    HTTP session for the whole run. Yields (records, record_index) per page,
+    where record_index advances on the raw records — even invalid ones — so an
+    unparseable page can't stall pagination.
+    Raises SavannahApiException if the API reports more data but returns no
+    usable record_index to advance on.
+    """
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as session:
+        has_more_records = True
+        while has_more_records:
+            records, has_more_records, max_record_index = await get_collar_data_page(
+                base_url=base_url,
+                username=username,
+                password=password,
+                collar_id=collar_id,
+                record_index=record_index,
+                session=session,
+            )
+            if max_record_index is not None and max_record_index > record_index:
+                record_index = max_record_index
+            elif has_more_records:
+                raise SavannahApiException(
+                    f"Collar {collar_id}: the page after record index {record_index} reports more "
+                    f"data but contains no record_index to advance on."
+                )
+            yield records, record_index
