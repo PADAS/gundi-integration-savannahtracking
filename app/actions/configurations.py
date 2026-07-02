@@ -10,7 +10,7 @@ from .core import (
 )
 
 
-class CheckCredentialsConfig(AuthActionConfiguration, ExecutableActionMixin):
+class CredentialsConfig(AuthActionConfiguration, ExecutableActionMixin):
     username: str = FieldWithUIOptions(
         ...,
         title="Username",
@@ -46,11 +46,11 @@ class ReadObservationsPerCollarConfig(InternalActionConfiguration):
     lookback_days: int = 3
 
 
-def get_auth_config(integration) -> CheckCredentialsConfig:
+def get_auth_config(integration) -> CredentialsConfig:
     auth_config = integration.get_action_config("check_credentials")
     if not auth_config:
         raise ConfigurationNotFound(
             f"Authentication settings for integration {str(integration.id)} are missing. "
             f"Please fix the integration setup in the portal."
         )
-    return CheckCredentialsConfig.parse_obj(auth_config.data)
+    return CredentialsConfig.parse_obj(auth_config.data)

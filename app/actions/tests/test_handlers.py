@@ -4,7 +4,7 @@ import pytest
 
 from app.actions import client
 from app.actions.configurations import (
-    CheckCredentialsConfig,
+    CredentialsConfig,
     ReadObservationsConfig,
     ReadObservationsPerCollarConfig,
 )
@@ -29,7 +29,7 @@ def make_record(record_index: int, recorded_at: datetime) -> client.SavannahReco
 
 @pytest.fixture
 def auth_config():
-    return CheckCredentialsConfig(username="testuser", password="testpassword")
+    return CredentialsConfig(username="testuser", password="testpassword")
 
 
 @pytest.mark.asyncio
@@ -159,6 +159,29 @@ async def test_action_read_observations_per_collar_resumes_from_watermark(
     )
 
     assert mock_get_collar_data_page.call_args.kwargs["record_index"] == 500
+
+
+@pytest.mark.asyncio
+async def test_action_read_observations_per_collar_stops_on_unparseable_page(
+        mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
+):
+    # An empty page with has_more_records=True must not re-request the same
+    # index forever
+    mock_get_collar_data_page = AsyncMock(return_value=([], True))
+    mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
+    mock_send_observations = AsyncMock()
+    mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
+    mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
+    from app.actions.handlers import action_read_observations_per_collar
+
+    result = await action_read_observations_per_collar(
+        savannah_integration,
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+    )
+
+    assert mock_get_collar_data_page.call_count == 1
+    assert result["observations_sent"] == 0
+    mock_send_observations.assert_not_called()
 
 
 @pytest.mark.asyncio

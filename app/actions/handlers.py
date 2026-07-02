@@ -9,7 +9,7 @@ from app.services.state import IntegrationStateManager
 
 from . import client
 from .configurations import (
-    CheckCredentialsConfig,
+    CredentialsConfig,
     ReadObservationsConfig,
     ReadObservationsPerCollarConfig,
     get_auth_config,
@@ -53,7 +53,7 @@ def _transform(collar_id: str, record: client.SavannahRecord) -> dict:
     }
 
 
-async def action_check_credentials(integration, action_config: CheckCredentialsConfig):
+async def action_check_credentials(integration, action_config: CredentialsConfig):
     logger.info(f"Executing auth action with integration {integration} and action_config {action_config}...")
     try:
         collar_ids = await client.get_collar_list(
@@ -117,6 +117,11 @@ async def action_read_observations_per_collar(integration, action_config: ReadOb
         if page:
             record_index = max(record.record_index for record in page)
             records.extend(page)
+        elif has_more_records:
+            # A page with no parseable records can't advance the watermark;
+            # stop rather than re-request the same index forever.
+            logger.warning(f"Got a page with no parseable records for collar {collar_id}. Stopping pagination.")
+            break
 
     min_date = datetime.now(tz=timezone.utc) - timedelta(days=action_config.lookback_days)
     newest_record = max(records, key=lambda record: record.recorded_at) if records else None

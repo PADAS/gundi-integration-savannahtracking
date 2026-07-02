@@ -31,7 +31,7 @@ Base URL: `https://api.savannahtracking.co.ke` (the legacy config used `endpoint
 
 ### `check_credentials` — `action_check_credentials`
 
-- Config: `CheckCredentialsConfig(AuthActionConfiguration, ExecutableActionMixin)` with
+- Config: `CredentialsConfig(AuthActionConfiguration, ExecutableActionMixin)` with
   `username: str` and `password: pydantic.SecretStr` (password widget, field order set via
   `GlobalUISchemaOptions`).
 - Handler calls `data_auth`. Returns `{"valid_credentials": bool}` plus collar count on
