@@ -101,6 +101,47 @@ async def test_get_collar_data_page_success():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_get_collar_data_page_parses_us_style_timestamps():
+    # Real record shape returned by the Savannah Tracking API
+    respx.post(f"{BASE_URL}{client.DATA_REQUEST_ENDPOINT}").respond(
+        json={
+            "records": [
+                {
+                    "record_index": 44022175,
+                    "record_time": "5/14/2023 3:43:10 PM",
+                    "time_to_fix": 0,
+                    "latitude": -3.606871,
+                    "longitude": 39.87716,
+                    "hdop": 0,
+                    "h_accuracy": 0,
+                    "heading": 0,
+                    "speed": 0,
+                    "speed_accuracy": 0,
+                    "altitude": 0,
+                    "temperature": 32.4,
+                    "initial_data": "",
+                    "battery": 3.99,
+                },
+            ],
+            "has_more_records": False,
+        }
+    )
+
+    records, _ = await client.get_collar_data_page(
+        base_url=BASE_URL,
+        username="testuser",
+        password="testpassword",
+        collar_id="IRI2016-4756",
+        record_index=44022174,
+    )
+
+    assert len(records) == 1
+    assert records[0].recorded_at.isoformat() == "2023-05-14T15:43:10+00:00"
+    assert records[0].battery == 3.99
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_get_collar_data_page_skips_invalid_records():
     respx.post(f"{BASE_URL}{client.DATA_REQUEST_ENDPOINT}").respond(
         json={

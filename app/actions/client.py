@@ -12,6 +12,7 @@ DEFAULT_API_BASE_URL = "https://api.savannahtracking.co.ke"
 DATA_AUTH_ENDPOINT = "/savannah_data/data_auth"
 DATA_REQUEST_ENDPOINT = "/savannah_data/data_request"
 DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=3.1)
+RECORD_TIME_FORMAT = "%m/%d/%Y %I:%M:%S %p"
 
 
 class SavannahApiException(Exception):
@@ -33,6 +34,16 @@ class SavannahRecord(pydantic.BaseModel):
     h_accuracy: Optional[float] = None
     hdop: Optional[float] = None
     battery: Optional[float] = None
+
+    @pydantic.validator("record_time", pre=True)
+    def parse_us_style_timestamp(cls, value):
+        # The API returns US-style timestamps like "5/14/2023 3:43:10 PM"
+        if isinstance(value, str):
+            try:
+                return datetime.strptime(value.strip(), RECORD_TIME_FORMAT)
+            except ValueError:
+                pass  # Fall through to pydantic's default parsing (e.g. ISO strings)
+        return value
 
     @pydantic.validator("record_time")
     def assume_utc(cls, value):
