@@ -83,6 +83,7 @@ async def test_action_read_observations_triggers_subaction_per_collar(
     triggered_configs = [c.kwargs["config"] for c in mock_trigger_action.call_args_list]
     assert [config.collar_id for config in triggered_configs] == collar_ids
     assert all(config.lookback_days == 3 for config in triggered_configs)
+    assert all(config.subject_type == "unassigned" for config in triggered_configs)
     assert all(
         c.kwargs["action_id"] == "read_observations_per_collar"
         for c in mock_trigger_action.call_args_list
@@ -129,6 +130,7 @@ async def test_action_read_observations_per_collar_sends_observations(
     observations = mock_send_observations.call_args.kwargs["observations"]
     assert [o["source"] for o in observations] == ["ST2010-3034"] * 3
     assert observations[0]["type"] == "tracking-device"
+    assert observations[0]["subject_type"] == "unassigned"
     assert observations[0]["location"] == {"lat": -1.2921, "lon": 36.8219}
     assert observations[0]["additional"]["record_index"] == 101
     # The watermark is persisted
@@ -136,6 +138,29 @@ async def test_action_read_observations_per_collar_sends_observations(
     assert set_state_call.args[2]["record_index"] == 103
     # No backoff for an active collar
     mock_state_manager_empty.set_if_absent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_action_read_observations_per_collar_with_custom_subject_type(
+        mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
+):
+    now = datetime.now(tz=timezone.utc)
+    mocker.patch(
+        "app.actions.handlers.client.get_collar_data_page",
+        AsyncMock(return_value=([make_record(101, now)], False)),
+    )
+    mock_send_observations = AsyncMock()
+    mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
+    mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
+    from app.actions.handlers import action_read_observations_per_collar
+
+    await action_read_observations_per_collar(
+        savannah_integration,
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3, subject_type="elephant"),
+    )
+
+    observations = mock_send_observations.call_args.kwargs["observations"]
+    assert observations[0]["subject_type"] == "elephant"
 
 
 @pytest.mark.asyncio

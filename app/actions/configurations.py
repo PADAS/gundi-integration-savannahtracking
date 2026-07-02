@@ -30,6 +30,9 @@ class CredentialsConfig(AuthActionConfiguration, ExecutableActionMixin):
     )
 
 
+DEFAULT_SUBJECT_TYPE = "unassigned"
+
+
 class ReadObservationsConfig(PullActionConfiguration):
     lookback_days: int = FieldWithUIOptions(
         3,
@@ -39,11 +42,20 @@ class ReadObservationsConfig(PullActionConfiguration):
         description="Number of days to look back for data. Older records are discarded, "
                     "except the newest one which is kept to reflect the collar's last known position.",
     )
+    subject_type: str = FieldWithUIOptions(
+        DEFAULT_SUBJECT_TYPE,
+        title="Subject type",
+        description="Subject type to assign to the observations (e.g. elephant, giraffe, ranger).",
+    )
+    ui_global_options = GlobalUISchemaOptions(
+        order=["lookback_days", "subject_type"],
+    )
 
 
 class ReadObservationsPerCollarConfig(InternalActionConfiguration):
     collar_id: str
     lookback_days: int = 3
+    subject_type: str = DEFAULT_SUBJECT_TYPE
 
 
 def get_auth_config(integration) -> CredentialsConfig:

@@ -32,10 +32,11 @@ def _get_base_url(integration) -> str:
     return (integration.base_url or client.DEFAULT_API_BASE_URL).rstrip("/")
 
 
-def _transform(collar_id: str, record: client.SavannahRecord) -> dict:
+def _transform(collar_id: str, subject_type: str, record: client.SavannahRecord) -> dict:
     return {
         "source": collar_id,
         "type": "tracking-device",
+        "subject_type": subject_type,
         "recorded_at": record.recorded_at.isoformat(),
         "location": {
             "lat": record.latitude,
@@ -83,6 +84,7 @@ async def action_read_observations(integration, action_config: ReadObservationsC
             config=ReadObservationsPerCollarConfig(
                 collar_id=collar_id,
                 lookback_days=action_config.lookback_days,
+                subject_type=action_config.subject_type,
             ),
         )
     return {"collars_triggered": len(collar_ids)}
@@ -130,7 +132,7 @@ async def action_read_observations_per_collar(integration, action_config: ReadOb
     # one so the collar's last known position stays current downstream.
     records_to_send = fresh_records or ([newest_record] if newest_record else [])
 
-    observations = [_transform(collar_id, record) for record in records_to_send]
+    observations = [_transform(collar_id, action_config.subject_type, record) for record in records_to_send]
     observations_sent = 0
     for i in range(0, len(observations), GUNDI_BATCH_SIZE):
         batch = observations[i: i + GUNDI_BATCH_SIZE]

@@ -41,7 +41,8 @@ Base URL: `https://api.savannahtracking.co.ke` (the legacy config used `endpoint
 ### `read_observations` — `action_read_observations`
 
 - Config: `ReadObservationsConfig(PullActionConfiguration)` with
-  `lookback_days: int = 3` (1–30, matches the legacy 3-day minimum-date window).
+  `lookback_days: int = 3` (1–30, matches the legacy 3-day minimum-date window) and
+  `subject_type: str = "unassigned"`, applied to every observation.
 - Scheduled with `@crontab_schedule("*/5 * * * *")`, matching the legacy cronjob cadence.
 - Handler: reads the `check_credentials` config from the integration, fetches the collar list, and triggers
   a `read_observations_per_collar` sub-action for each collar via
@@ -49,8 +50,9 @@ Base URL: `https://api.savannahtracking.co.ke` (the legacy config used `endpoint
 
 ### `read_observations_per_collar` — `action_read_observations_per_collar`
 
-- Config: `ReadObservationsPerCollarConfig(InternalActionConfiguration)` with `collar_id: str`
-  and `lookback_days: int = 3` (propagated from the parent action). Internal: not shown in the
+- Config: `ReadObservationsPerCollarConfig(InternalActionConfiguration)` with `collar_id: str`,
+  `lookback_days: int = 3`, and `subject_type: str = "unassigned"` (propagated from the parent
+  action). Internal: not shown in the
   portal.
 - Handler flow:
   1. **Dormant backoff check**: if the backoff key for this collar exists in the state store,
@@ -79,6 +81,7 @@ Base URL: `https://api.savannahtracking.co.ke` (the legacy config used `endpoint
 {
   "source": "<collar_id>",
   "type": "tracking-device",
+  "subject_type": "<from config, default unassigned>",
   "recorded_at": "<record_time parsed as UTC, ISO-8601>",
   "location": {"lat": <latitude>, "lon": <longitude>},
   "additional": {
@@ -89,8 +92,8 @@ Base URL: `https://api.savannahtracking.co.ke` (the legacy config used `endpoint
 }
 ```
 
-Same field mapping as the legacy `SavannahConnector.transform`. No `subject_type` is set
-(legacy didn't set one; subject typing is managed downstream).
+Same field mapping as the legacy `SavannahConnector.transform`, plus a configurable
+`subject_type` (default `unassigned`).
 
 ## New modules
 
