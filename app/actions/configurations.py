@@ -55,6 +55,12 @@ class ReadObservationsConfig(PullActionConfiguration):
     )
 
 
+# Drop the pause toggle inherited from PullActionConfiguration: this integration
+# always runs its pull on schedule, and the action runner treats a missing field
+# as enabled. Stored configs with a run_on_schedule value are ignored on parse.
+ReadObservationsConfig.__fields__.pop("run_on_schedule", None)
+
+
 class ReadObservationsPerCollarConfig(InternalActionConfiguration):
     collar_id: str
     lookback_days: int = 3
