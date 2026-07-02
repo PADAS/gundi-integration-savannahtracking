@@ -30,7 +30,7 @@ class AuthenticateConfig(AuthActionConfiguration, ExecutableActionMixin):
     )
 
 
-class PullObservationsConfig(PullActionConfiguration):
+class ReadObservationsConfig(PullActionConfiguration):
     lookback_days: int = FieldWithUIOptions(
         3,
         ge=1,
@@ -41,7 +41,7 @@ class PullObservationsConfig(PullActionConfiguration):
     )
 
 
-class PullObservationsPerCollarConfig(InternalActionConfiguration):
+class ReadObservationsPerCollarConfig(InternalActionConfiguration):
     collar_id: str
     lookback_days: int = 3
 

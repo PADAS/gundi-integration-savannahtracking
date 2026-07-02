@@ -5,8 +5,8 @@ import pytest
 from app.actions import client
 from app.actions.configurations import (
     AuthenticateConfig,
-    PullObservationsConfig,
-    PullObservationsPerCollarConfig,
+    ReadObservationsConfig,
+    ReadObservationsPerCollarConfig,
 )
 from app.conftest import AsyncMock, async_return
 from app.services.errors import ConfigurationNotFound
@@ -38,9 +38,9 @@ async def test_action_auth_with_valid_credentials(mocker, savannah_integration, 
         "app.actions.handlers.client.get_collar_list",
         AsyncMock(return_value=["ST2010-3034", "ST2010-3035"]),
     )
-    from app.actions.handlers import action_auth
+    from app.actions.handlers import action_credentials
 
-    result = await action_auth(savannah_integration, auth_config)
+    result = await action_credentials(savannah_integration, auth_config)
 
     assert result == {"valid_credentials": True, "collars_qty": 2}
 
@@ -51,15 +51,15 @@ async def test_action_auth_with_bad_credentials(mocker, savannah_integration, au
         "app.actions.handlers.client.get_collar_list",
         AsyncMock(side_effect=client.SavannahBadCredentialsException("Invalid username or password")),
     )
-    from app.actions.handlers import action_auth
+    from app.actions.handlers import action_credentials
 
-    result = await action_auth(savannah_integration, auth_config)
+    result = await action_credentials(savannah_integration, auth_config)
 
     assert result["valid_credentials"] is False
 
 
 @pytest.mark.asyncio
-async def test_action_pull_observations_triggers_subaction_per_collar(
+async def test_action_read_observations_triggers_subaction_per_collar(
         mocker, mock_publish_event, savannah_integration
 ):
     collar_ids = ["ST2010-3034", "ST2010-3035", "ST2010-3036"]
@@ -67,10 +67,10 @@ async def test_action_pull_observations_triggers_subaction_per_collar(
     mocker.patch("app.actions.handlers.client.get_collar_list", mock_get_collar_list)
     mock_trigger_action = AsyncMock()
     mocker.patch("app.actions.handlers.trigger_action", mock_trigger_action)
-    from app.actions.handlers import action_pull_observations
+    from app.actions.handlers import action_read_observations
 
-    result = await action_pull_observations(
-        savannah_integration, PullObservationsConfig(lookback_days=3)
+    result = await action_read_observations(
+        savannah_integration, ReadObservationsConfig(lookback_days=3)
     )
 
     assert result == {"collars_triggered": 3}
@@ -84,25 +84,25 @@ async def test_action_pull_observations_triggers_subaction_per_collar(
     assert [config.collar_id for config in triggered_configs] == collar_ids
     assert all(config.lookback_days == 3 for config in triggered_configs)
     assert all(
-        c.kwargs["action_id"] == "pull_observations_per_collar"
+        c.kwargs["action_id"] == "read_observations_per_collar"
         for c in mock_trigger_action.call_args_list
     )
 
 
 @pytest.mark.asyncio
-async def test_action_pull_observations_without_auth_config(
+async def test_action_read_observations_without_auth_config(
         mocker, mock_publish_event, savannah_integration_without_auth
 ):
-    from app.actions.handlers import action_pull_observations
+    from app.actions.handlers import action_read_observations
 
     with pytest.raises(ConfigurationNotFound):
-        await action_pull_observations(
-            savannah_integration_without_auth, PullObservationsConfig(lookback_days=3)
+        await action_read_observations(
+            savannah_integration_without_auth, ReadObservationsConfig(lookback_days=3)
         )
 
 
 @pytest.mark.asyncio
-async def test_action_pull_observations_per_collar_sends_observations(
+async def test_action_read_observations_per_collar_sends_observations(
         mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
 ):
     now = datetime.now(tz=timezone.utc)
@@ -113,11 +113,11 @@ async def test_action_pull_observations_per_collar_sends_observations(
     mock_send_observations = AsyncMock(return_value=[{"object_id": "test"}])
     mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
-    from app.actions.handlers import action_pull_observations_per_collar
+    from app.actions.handlers import action_read_observations_per_collar
 
-    result = await action_pull_observations_per_collar(
+    result = await action_read_observations_per_collar(
         savannah_integration,
-        PullObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
     )
 
     assert result["observations_extracted"] == 3
@@ -139,7 +139,7 @@ async def test_action_pull_observations_per_collar_sends_observations(
 
 
 @pytest.mark.asyncio
-async def test_action_pull_observations_per_collar_resumes_from_cursor(
+async def test_action_read_observations_per_collar_resumes_from_cursor(
         mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
 ):
     now = datetime.now(tz=timezone.utc)
@@ -151,18 +151,18 @@ async def test_action_pull_observations_per_collar_resumes_from_cursor(
     mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
     mocker.patch("app.actions.handlers.send_observations_to_gundi", AsyncMock())
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
-    from app.actions.handlers import action_pull_observations_per_collar
+    from app.actions.handlers import action_read_observations_per_collar
 
-    await action_pull_observations_per_collar(
+    await action_read_observations_per_collar(
         savannah_integration,
-        PullObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
     )
 
     assert mock_get_collar_data_page.call_args.kwargs["record_index"] == 500
 
 
 @pytest.mark.asyncio
-async def test_action_pull_observations_per_collar_skips_during_backoff(
+async def test_action_read_observations_per_collar_skips_during_backoff(
         mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
 ):
     mock_state_manager_empty.get_state.side_effect = None
@@ -170,11 +170,11 @@ async def test_action_pull_observations_per_collar_skips_during_backoff(
     mock_get_collar_data_page = AsyncMock()
     mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
-    from app.actions.handlers import action_pull_observations_per_collar
+    from app.actions.handlers import action_read_observations_per_collar
 
-    result = await action_pull_observations_per_collar(
+    result = await action_read_observations_per_collar(
         savannah_integration,
-        PullObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
     )
 
     assert result["skipped"] is True
@@ -182,7 +182,7 @@ async def test_action_pull_observations_per_collar_skips_during_backoff(
 
 
 @pytest.mark.asyncio
-async def test_action_pull_observations_per_collar_with_stale_records_sets_backoff(
+async def test_action_read_observations_per_collar_with_stale_records_sets_backoff(
         mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
 ):
     now = datetime.now(tz=timezone.utc)
@@ -197,11 +197,11 @@ async def test_action_pull_observations_per_collar_with_stale_records_sets_backo
     mock_send_observations = AsyncMock()
     mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
-    from app.actions.handlers import action_pull_observations_per_collar
+    from app.actions.handlers import action_read_observations_per_collar
 
-    result = await action_pull_observations_per_collar(
+    result = await action_read_observations_per_collar(
         savannah_integration,
-        PullObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
     )
 
     # Only the newest record is sent to keep the last known position current
@@ -215,7 +215,7 @@ async def test_action_pull_observations_per_collar_with_stale_records_sets_backo
 
 
 @pytest.mark.asyncio
-async def test_action_pull_observations_per_collar_with_no_records(
+async def test_action_read_observations_per_collar_with_no_records(
         mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
 ):
     mocker.patch(
@@ -225,11 +225,11 @@ async def test_action_pull_observations_per_collar_with_no_records(
     mock_send_observations = AsyncMock()
     mocker.patch("app.actions.handlers.send_observations_to_gundi", mock_send_observations)
     mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
-    from app.actions.handlers import action_pull_observations_per_collar
+    from app.actions.handlers import action_read_observations_per_collar
 
-    result = await action_pull_observations_per_collar(
+    result = await action_read_observations_per_collar(
         savannah_integration,
-        PullObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
     )
 
     assert result["observations_extracted"] == 0

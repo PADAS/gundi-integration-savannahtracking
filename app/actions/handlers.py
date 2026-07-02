@@ -10,8 +10,8 @@ from app.services.state import IntegrationStateManager
 from . import client
 from .configurations import (
     AuthenticateConfig,
-    PullObservationsConfig,
-    PullObservationsPerCollarConfig,
+    ReadObservationsConfig,
+    ReadObservationsPerCollarConfig,
     get_auth_config,
 )
 
@@ -20,8 +20,8 @@ state_manager = IntegrationStateManager()
 
 
 GUNDI_BATCH_SIZE = 200
-CURSOR_STATE_ACTION_ID = "pull_observations"
-BACKOFF_STATE_ACTION_ID = "pull_observations_backoff"
+CURSOR_STATE_ACTION_ID = "read_observations"
+BACKOFF_STATE_ACTION_ID = "read_observations_backoff"
 # When a collar's newest record is older than the lookback window, skip it for
 # ~21-27 hours (randomized to spread the load across runs), like the legacy
 # CDIP integration did.
@@ -53,7 +53,7 @@ def _transform(collar_id: str, record: client.SavannahRecord) -> dict:
     }
 
 
-async def action_auth(integration, action_config: AuthenticateConfig):
+async def action_check_credentials(integration, action_config: CheckCredentialsConfig):
     logger.info(f"Executing auth action with integration {integration} and action_config {action_config}...")
     try:
         collar_ids = await client.get_collar_list(
@@ -66,10 +66,10 @@ async def action_auth(integration, action_config: AuthenticateConfig):
     return {"valid_credentials": True, "collars_qty": len(collar_ids)}
 
 
-@crontab_schedule("*/10 * * * *")
+@crontab_schedule("*/5 * * * *")
 @activity_logger()
-async def action_pull_observations(integration, action_config: PullObservationsConfig):
-    logger.info(f"Executing pull_observations action with integration {integration} and action_config {action_config}...")
+async def action_read_observations(integration, action_config: ReadObservationsConfig):
+    logger.info(f"Executing read_observations action with integration {integration} and action_config {action_config}...")
     auth_config = get_auth_config(integration)
     collar_ids = await client.get_collar_list(
         base_url=_get_base_url(integration),
@@ -79,8 +79,8 @@ async def action_pull_observations(integration, action_config: PullObservationsC
     for collar_id in collar_ids:
         await trigger_action(
             integration_id=str(integration.id),
-            action_id="pull_observations_per_collar",
-            config=PullObservationsPerCollarConfig(
+            action_id=action_read_observations_per_collar.__name__[len("action_"):],
+            config=ReadObservationsPerCollarConfig(
                 collar_id=collar_id,
                 lookback_days=action_config.lookback_days,
             ),
@@ -89,10 +89,10 @@ async def action_pull_observations(integration, action_config: PullObservationsC
 
 
 @activity_logger()
-async def action_pull_observations_per_collar(integration, action_config: PullObservationsPerCollarConfig):
+async def action_read_observations_per_collar(integration, action_config: ReadObservationsPerCollarConfig):
     collar_id = action_config.collar_id
     integration_id = str(integration.id)
-    logger.info(f"Executing pull_observations_per_collar action for collar {collar_id} in integration {integration_id}...")
+    logger.info(f"Executing read_observations_per_collar action for collar {collar_id} in integration {integration_id}...")
 
     backoff = await state_manager.get_state(integration_id, BACKOFF_STATE_ACTION_ID, collar_id)
     if backoff:

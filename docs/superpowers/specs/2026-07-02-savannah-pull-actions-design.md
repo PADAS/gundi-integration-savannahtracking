@@ -38,20 +38,18 @@ Base URL: `https://api.savannahtracking.co.ke` (the legacy config used `endpoint
   success; on bad credentials returns `{"valid_credentials": False}` rather than raising, so
   the portal shows a clean result.
 
-### `pull_observations` — `action_pull_observations`
+### `read_observations` — `action_read_observations`
 
-- Config: `PullObservationsConfig(PullActionConfiguration)` with
+- Config: `ReadObservationsConfig(PullActionConfiguration)` with
   `lookback_days: int = 3` (1–30, matches the legacy 3-day minimum-date window).
-- Scheduled with `@crontab_schedule("*/10 * * * *")` (legacy cronjob ran every 5 minutes; with
-  the per-collar fan-out each collar is still refreshed on a comparable cadence while keeping
-  scheduler load moderate).
+- Scheduled with `@crontab_schedule("*/5 * * * *")`, matching the legacy cronjob cadence.
 - Handler: reads the `auth` config from the integration, fetches the collar list, and triggers
-  a `pull_observations_per_collar` sub-action for each collar via
+  a `read_observations_per_collar` sub-action for each collar via
   `app.services.action_scheduler.trigger_action`. Returns `{"collars_triggered": n}`.
 
-### `pull_observations_per_collar` — `action_pull_observations_per_collar`
+### `read_observations_per_collar` — `action_read_observations_per_collar`
 
-- Config: `PullObservationsPerCollarConfig(InternalActionConfiguration)` with `collar_id: str`
+- Config: `ReadObservationsPerCollarConfig(InternalActionConfiguration)` with `collar_id: str`
   and `lookback_days: int = 3` (propagated from the parent action). Internal: not shown in the
   portal.
 - Handler flow:
@@ -71,8 +69,8 @@ Base URL: `https://api.savannahtracking.co.ke` (the legacy config used `endpoint
      lookback window, set the backoff key with a random TTL of 76000–96000 seconds
      (~21–27h), so dormant collars are queried roughly daily (legacy behavior).
 - State keys (via `IntegrationStateManager`):
-  - Cursor: `action_id="pull_observations"`, `source_id=<collar_id>`.
-  - Backoff: `set_if_absent` with `action_id="pull_observations_backoff"`,
+  - Cursor: `action_id="read_observations"`, `source_id=<collar_id>`.
+  - Backoff: `set_if_absent` with `action_id="read_observations_backoff"`,
     `source_id=<collar_id>` and the TTL above; the check is `get_state` truthiness.
 
 ## Observation format
@@ -109,7 +107,7 @@ Same field mapping as the legacy `SavannahConnector.transform`. No `subject_type
 
 ## Error handling
 
-- Bad credentials in `pull_observations`: raise, so the action runner records the error and
+- Bad credentials in `read_observations`: raise, so the action runner records the error and
   the portal surfaces it (the `auth` action is the way to test credentials cleanly).
 - Per-collar HTTP errors: raise from the sub-action; failures are isolated per collar and
   logged by the activity logger. No swallow-and-continue as the legacy did — the action
