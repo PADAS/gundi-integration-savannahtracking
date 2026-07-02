@@ -1,0 +1,126 @@
+# Savannah Tracking Pull Actions — Design
+
+Date: 2026-07-02
+
+## Goal
+
+Replace the legacy CDIP integration (`cdip-integrations/savannah`, a K8s cronjob built on
+`cdip_connector.AbstractConnector`) with actions in this Gundi v2 action runner. The new
+implementation pulls collar positions from the Savannah Tracking API and sends them to Gundi
+as observations, preserving the legacy production behavior.
+
+Scope decision (confirmed): **observations only**. Alerts (`exceptions_download`) are out of
+scope and can be added later as a separate action.
+
+## Savannah Tracking API (from legacy code)
+
+Base URL: `https://api.savannahtracking.co.ke` (the legacy config used `endpoint`; here we use
+`integration.base_url`, falling back to this default).
+
+- `POST {base}/savannah_data/data_auth` with form data
+  `{request: "authenticate", uid, pwd}` → `{"sucess": true, "records": [collar_id, ...]}`
+  (note the API's misspelled `sucess` key) or `{"sucess": false, "login_error_msg": "..."}`.
+- `POST {base}/savannah_data/data_request` with form data
+  `{request: "data_download", uid, pwd, collar, record_index}` →
+  `{"records": [...], "has_more_records": bool}`.
+  Records carry `record_index`, `record_time` (naive UTC), `latitude`, `longitude`, `speed`,
+  `heading`, `temperature`, `h_accuracy`, `hdop`, `battery`. Pagination is cursor-based on
+  `record_index`; pass the highest index seen to resume.
+
+## Actions
+
+### `auth` — `action_auth`
+
+- Config: `AuthenticateConfig(AuthActionConfiguration, ExecutableActionMixin)` with
+  `username: str` and `password: pydantic.SecretStr` (password widget, field order set via
+  `GlobalUISchemaOptions`).
+- Handler calls `data_auth`. Returns `{"valid_credentials": bool}` plus collar count on
+  success; on bad credentials returns `{"valid_credentials": False}` rather than raising, so
+  the portal shows a clean result.
+
+### `pull_observations` — `action_pull_observations`
+
+- Config: `PullObservationsConfig(PullActionConfiguration)` with
+  `lookback_days: int = 3` (1–30, matches the legacy 3-day minimum-date window).
+- Scheduled with `@crontab_schedule("*/10 * * * *")` (legacy cronjob ran every 5 minutes; with
+  the per-collar fan-out each collar is still refreshed on a comparable cadence while keeping
+  scheduler load moderate).
+- Handler: reads the `auth` config from the integration, fetches the collar list, and triggers
+  a `pull_observations_per_collar` sub-action for each collar via
+  `app.services.action_scheduler.trigger_action`. Returns `{"collars_triggered": n}`.
+
+### `pull_observations_per_collar` — `action_pull_observations_per_collar`
+
+- Config: `PullObservationsPerCollarConfig(InternalActionConfiguration)` with `collar_id: str`
+  and `lookback_days: int = 3` (propagated from the parent action). Internal: not shown in the
+  portal.
+- Handler flow:
+  1. **Dormant backoff check**: if the backoff key for this collar exists in the state store,
+     return `{"skipped": true, ...}` without querying the API.
+  2. Read the cursor state: `{"record_index": int, "latest_timestamp": iso}`; default
+     `record_index=-1` (legacy default for a new collar).
+  3. Page through `data_download` from the cursor until `has_more_records` is false,
+     accumulating records and advancing the cursor.
+  4. Filter records to those with `recorded_at >= now - lookback_days`; if all records are
+     older, keep only the newest record (legacy `vals or vals_tail` behavior, which keeps the
+     downstream track alive).
+  5. Transform to Gundi observations (see below) and send with
+     `send_observations_to_gundi` in batches of 200.
+  6. Persist the cursor state.
+  7. **Dormant backoff set**: if records were fetched and the newest one is older than the
+     lookback window, set the backoff key with a random TTL of 76000–96000 seconds
+     (~21–27h), so dormant collars are queried roughly daily (legacy behavior).
+- State keys (via `IntegrationStateManager`):
+  - Cursor: `action_id="pull_observations"`, `source_id=<collar_id>`.
+  - Backoff: `set_if_absent` with `action_id="pull_observations_backoff"`,
+    `source_id=<collar_id>` and the TTL above; the check is `get_state` truthiness.
+
+## Observation format
+
+```json
+{
+  "source": "<collar_id>",
+  "type": "tracking-device",
+  "recorded_at": "<record_time parsed as UTC, ISO-8601>",
+  "location": {"lat": <latitude>, "lon": <longitude>},
+  "additional": {
+    "speed": ..., "heading": ..., "temperature": ...,
+    "accuracy": <h_accuracy>, "hdop": ..., "battery": ...,
+    "record_index": ...
+  }
+}
+```
+
+Same field mapping as the legacy `SavannahConnector.transform`. No `subject_type` is set
+(legacy didn't set one; subject typing is managed downstream).
+
+## New modules
+
+- `app/actions/client.py` — thin async API client:
+  - `SavannahBadCredentialsException` / `SavannahApiException`.
+  - `SavannahRecord` pydantic model (tolerant: numeric fields optional).
+  - `get_collar_list(base_url, username, password) -> list[str]`.
+  - `get_collar_data_page(base_url, username, password, collar_id, record_index) ->
+    (records, has_more_records)`.
+  - Uses `httpx.AsyncClient` with a sane timeout; raises on non-2xx.
+- `app/actions/configurations.py` — the three config models + `get_auth_config(integration)`
+  helper that raises `ConfigurationNotFound` if the auth action is not configured.
+- `app/actions/handlers.py` — the three handlers, decorated with `@activity_logger()`.
+
+## Error handling
+
+- Bad credentials in `pull_observations`: raise, so the action runner records the error and
+  the portal surfaces it (the `auth` action is the way to test credentials cleanly).
+- Per-collar HTTP errors: raise from the sub-action; failures are isolated per collar and
+  logged by the activity logger. No swallow-and-continue as the legacy did — the action
+  runner already provides retry/error visibility.
+
+## Testing
+
+`app/actions/tests/` (new):
+- `test_client.py` — respx-mocked httpx: auth success/failure, pagination, record parsing.
+- `test_handlers.py` — mock client, `send_observations_to_gundi`, `trigger_action`, and state
+  manager: fan-out, cursor advance, lookback filtering with tail-keep, backoff skip/set,
+  auth handler results.
+
+Existing `app/conftest.py` fixtures (mock integration, publish_event, etc.) are reused.
