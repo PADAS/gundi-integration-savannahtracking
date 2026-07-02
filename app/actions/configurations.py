@@ -37,7 +37,7 @@ class ReadObservationsConfig(PullActionConfiguration):
     lookback_days: int = FieldWithUIOptions(
         3,
         ge=1,
-        le=7,
+        le=30,
         title="Data lookback days",
         description="Number of days to look back for data. Older records are discarded, "
                     "except the newest one which is kept to reflect the collar's last known position.",
