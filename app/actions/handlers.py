@@ -9,7 +9,7 @@ from app.services.state import IntegrationStateManager
 
 from . import client
 from .configurations import (
-    AuthenticateConfig,
+    CheckCredentialsConfig,
     ReadObservationsConfig,
     ReadObservationsPerCollarConfig,
     get_auth_config,
@@ -20,7 +20,7 @@ state_manager = IntegrationStateManager()
 
 
 GUNDI_BATCH_SIZE = 200
-CURSOR_STATE_ACTION_ID = "read_observations"
+WATERMARK_STATE_ACTION_ID = "read_observations"
 BACKOFF_STATE_ACTION_ID = "read_observations_backoff"
 # When a collar's newest record is older than the lookback window, skip it for
 # ~21-27 hours (randomized to spread the load across runs), like the legacy
@@ -101,8 +101,8 @@ async def action_read_observations_per_collar(integration, action_config: ReadOb
 
     auth_config = get_auth_config(integration)
     base_url = _get_base_url(integration)
-    cursor_state = await state_manager.get_state(integration_id, CURSOR_STATE_ACTION_ID, collar_id)
-    record_index = cursor_state.get("record_index", -1)
+    watermark = await state_manager.get_state(integration_id, WATERMARK_STATE_ACTION_ID, collar_id)
+    record_index = watermark.get("record_index", -1)
 
     records = []
     has_more_records = True
@@ -135,7 +135,7 @@ async def action_read_observations_per_collar(integration, action_config: ReadOb
     if records:
         await state_manager.set_state(
             integration_id,
-            CURSOR_STATE_ACTION_ID,
+            WATERMARK_STATE_ACTION_ID,
             {
                 "record_index": record_index,
                 "latest_timestamp": newest_record.recorded_at.isoformat(),

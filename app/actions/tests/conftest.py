@@ -20,8 +20,8 @@ def savannah_integration_as_dict():
                 {
                     "id": "80448d1c-4696-4b32-a59f-f3494fc949ad",
                     "type": "auth",
-                    "name": "Authenticate",
-                    "value": "auth",
+                    "name": "Check Credentials",
+                    "value": "check_credentials",
                     "description": "Authenticate against the Savannah Tracking API",
                     "schema": {},
                 },
@@ -47,8 +47,8 @@ def savannah_integration_as_dict():
                 "action": {
                     "id": "80448d1c-4696-4b32-a59f-f3494fc949ad",
                     "type": "auth",
-                    "name": "Authenticate",
-                    "value": "auth",
+                    "name": "Check Credentials",
+                    "value": "check_credentials",
                 },
                 "data": {"username": "testuser", "password": "testpassword"},
             },
@@ -80,7 +80,7 @@ def savannah_integration(savannah_integration_as_dict):
 def savannah_integration_without_auth(savannah_integration_as_dict):
     savannah_integration_as_dict["configurations"] = [
         config for config in savannah_integration_as_dict["configurations"]
-        if config["action"]["value"] != "auth"
+        if config["action"]["value"] != "check_credentials"
     ]
     return Integration.parse_obj(savannah_integration_as_dict)
 

@@ -4,7 +4,7 @@ import pytest
 
 from app.actions import client
 from app.actions.configurations import (
-    AuthenticateConfig,
+    CheckCredentialsConfig,
     ReadObservationsConfig,
     ReadObservationsPerCollarConfig,
 )
@@ -29,31 +29,31 @@ def make_record(record_index: int, recorded_at: datetime) -> client.SavannahReco
 
 @pytest.fixture
 def auth_config():
-    return AuthenticateConfig(username="testuser", password="testpassword")
+    return CheckCredentialsConfig(username="testuser", password="testpassword")
 
 
 @pytest.mark.asyncio
-async def test_action_auth_with_valid_credentials(mocker, savannah_integration, auth_config):
+async def test_action_check_credentials_with_valid_credentials(mocker, savannah_integration, auth_config):
     mocker.patch(
         "app.actions.handlers.client.get_collar_list",
         AsyncMock(return_value=["ST2010-3034", "ST2010-3035"]),
     )
-    from app.actions.handlers import action_credentials
+    from app.actions.handlers import action_check_credentials
 
-    result = await action_credentials(savannah_integration, auth_config)
+    result = await action_check_credentials(savannah_integration, auth_config)
 
     assert result == {"valid_credentials": True, "collars_qty": 2}
 
 
 @pytest.mark.asyncio
-async def test_action_auth_with_bad_credentials(mocker, savannah_integration, auth_config):
+async def test_action_check_credentials_with_bad_credentials(mocker, savannah_integration, auth_config):
     mocker.patch(
         "app.actions.handlers.client.get_collar_list",
         AsyncMock(side_effect=client.SavannahBadCredentialsException("Invalid username or password")),
     )
-    from app.actions.handlers import action_credentials
+    from app.actions.handlers import action_check_credentials
 
-    result = await action_credentials(savannah_integration, auth_config)
+    result = await action_check_credentials(savannah_integration, auth_config)
 
     assert result["valid_credentials"] is False
 
@@ -122,7 +122,7 @@ async def test_action_read_observations_per_collar_sends_observations(
 
     assert result["observations_extracted"] == 3
     assert result["observations_sent"] == 3
-    # First page is requested from the default cursor
+    # First page is requested from the default watermark
     assert mock_get_collar_data_page.call_args_list[0].kwargs["record_index"] == -1
     # Second page resumes from the highest index seen
     assert mock_get_collar_data_page.call_args_list[1].kwargs["record_index"] == 102
@@ -131,7 +131,7 @@ async def test_action_read_observations_per_collar_sends_observations(
     assert observations[0]["type"] == "tracking-device"
     assert observations[0]["location"] == {"lat": -1.2921, "lon": 36.8219}
     assert observations[0]["additional"]["record_index"] == 101
-    # Cursor state is persisted
+    # The watermark is persisted
     set_state_call = mock_state_manager_empty.set_state.call_args
     assert set_state_call.args[2]["record_index"] == 103
     # No backoff for an active collar
@@ -139,7 +139,7 @@ async def test_action_read_observations_per_collar_sends_observations(
 
 
 @pytest.mark.asyncio
-async def test_action_read_observations_per_collar_resumes_from_cursor(
+async def test_action_read_observations_per_collar_resumes_from_watermark(
         mocker, mock_publish_event, savannah_integration, mock_state_manager_empty
 ):
     now = datetime.now(tz=timezone.utc)
