@@ -1,6 +1,22 @@
 # gundi-integration-savannahtracking
 This repository is a Gundi Action Runner implementation for integration with Savannah Tracking.
 
+## CLI
+
+A standalone CLI is included for fetching data from the Savannah Tracking API directly
+(useful for exploring the data or debugging without going through Gundi):
+
+```bash
+export ST_USERNAME=... ST_PASSWORD=...   # or pass --username/--password
+
+# List available collar IDs
+python -m app.actions.cli collars
+
+# Fetch records for a collar as JSON lines (optionally from a record index or time window)
+python -m app.actions.cli data IRI2016-4756 --lookback-days 3
+python -m app.actions.cli data IRI2016-4756 --record-index 44022174 | jq .latitude
+```
+
 ## Usage
 - Fork this repo
 - Implement your own actions in `actions/handlers.py`
