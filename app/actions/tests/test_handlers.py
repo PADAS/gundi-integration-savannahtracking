@@ -33,7 +33,9 @@ def auth_config():
 
 
 @pytest.mark.asyncio
-async def test_action_check_credentials_with_valid_credentials(mocker, savannah_integration, auth_config):
+async def test_action_check_credentials_with_valid_credentials(
+        mocker, mock_publish_event, savannah_integration, auth_config
+):
     mocker.patch(
         "app.actions.handlers.client.get_collar_list",
         AsyncMock(return_value=["ST2010-3034", "ST2010-3035"]),
@@ -46,7 +48,9 @@ async def test_action_check_credentials_with_valid_credentials(mocker, savannah_
 
 
 @pytest.mark.asyncio
-async def test_action_check_credentials_with_bad_credentials(mocker, savannah_integration, auth_config):
+async def test_action_check_credentials_with_bad_credentials(
+        mocker, mock_publish_event, savannah_integration, auth_config
+):
     mocker.patch(
         "app.actions.handlers.client.get_collar_list",
         AsyncMock(side_effect=client.SavannahBadCredentialsException("Invalid username or password")),

@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 from gundi_core.schemas.v2 import Integration
 
@@ -78,11 +80,12 @@ def savannah_integration(savannah_integration_as_dict):
 
 @pytest.fixture
 def savannah_integration_without_auth(savannah_integration_as_dict):
-    savannah_integration_as_dict["configurations"] = [
-        config for config in savannah_integration_as_dict["configurations"]
+    integration_as_dict = copy.deepcopy(savannah_integration_as_dict)
+    integration_as_dict["configurations"] = [
+        config for config in integration_as_dict["configurations"]
         if config["action"]["value"] != "check_credentials"
     ]
-    return Integration.parse_obj(savannah_integration_as_dict)
+    return Integration.parse_obj(integration_as_dict)
 
 
 @pytest.fixture

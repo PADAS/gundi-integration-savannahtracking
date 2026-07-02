@@ -54,8 +54,9 @@ def _transform(collar_id: str, subject_type: str, record: client.SavannahRecord)
     }
 
 
+@activity_logger()
 async def action_check_credentials(integration, action_config: CredentialsConfig):
-    logger.info(f"Executing auth action with integration {integration} and action_config {action_config}...")
+    logger.info(f"Executing check_credentials action for integration '{integration.id}'...")
     try:
         collar_ids = await client.get_collar_list(
             base_url=_get_base_url(integration),
@@ -70,7 +71,7 @@ async def action_check_credentials(integration, action_config: CredentialsConfig
 @crontab_schedule("*/5 * * * *")
 @activity_logger()
 async def action_read_observations(integration, action_config: ReadObservationsConfig):
-    logger.info(f"Executing read_observations action with integration {integration} and action_config {action_config}...")
+    logger.info(f"Executing read_observations action for integration '{integration.id}'...")
     auth_config = get_auth_config(integration)
     collar_ids = await client.get_collar_list(
         base_url=_get_base_url(integration),

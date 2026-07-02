@@ -82,7 +82,7 @@ async def get_collar_list(*, base_url: str, username: str, password: str) -> Lis
 
 
 async def get_collar_data_page(
-        *, base_url: str, username: str, password: str, collar_id: str, record_index: int
+    *, base_url: str, username: str, password: str, collar_id: str, record_index: int
 ) -> Tuple[List[SavannahRecord], bool]:
     """
     Fetch one page of position records for a collar, starting after record_index.
