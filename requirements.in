@@ -1,1 +1,2 @@
 # Add your integration-specific dependencies here
+respx~=0.22.0
