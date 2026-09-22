@@ -14,7 +14,7 @@ from app import settings
 from app.conftest import async_return
 from app.services.activity_logger import (
     publish_event, publish_events, activity_logger, webhook_activity_logger, log_activity,
-    PUBSUB_MAX_MESSAGES_PER_PUBLISH,
+    PUBSUB_MAX_MESSAGES_PER_PUBLISH, log_action_activity, log_webhook_activity,
 )
 from app.services.errors import IntegrationAuthError
 from app.webhooks import GenericJsonPayload, GenericJsonTransformConfig
@@ -329,3 +329,25 @@ async def test_publish_events_is_a_no_op_on_ephemeral_run(mocker, mock_pubsub_cl
 
     assert response is None
     assert not mock_pubsub_client.PublisherClient.return_value.publish.called
+
+
+@pytest.mark.asyncio
+async def test_log_activity_default_level_is_a_valid_log_level(mocker, integration_v2, mock_publish_event):
+    """gundi-core's LogLevel is an IntEnum, so the string default "INFO" the
+    helpers used to carry never validated: a connector that called
+    log_action_activity without a level got a ValidationError instead of a
+    log entry. The default must be the enum member."""
+    mocker.patch("app.services.activity_logger.publish_event", mock_publish_event)
+
+    await log_action_activity(
+        integration_id=str(integration_v2.id),
+        action_id="pull_observations",
+        title="Something worth telling the operator",
+    )
+    await log_webhook_activity(
+        integration_id=str(integration_v2.id),
+        title="Webhook received",
+    )
+
+    levels = [call.kwargs["event"].payload.level for call in mock_publish_event.call_args_list]
+    assert levels == [LogLevel.INFO, LogLevel.INFO]
