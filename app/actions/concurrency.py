@@ -17,11 +17,11 @@ class ProviderSemaphore:
     acquisition time. A holder older than `holder_ttl_seconds` is treated as
     dead and evicted, so an instance that is killed mid-run frees its slot.
 
-    Acquisition is the ZADD-then-ZRANK pattern: the holder is added, and keeps
-    the slot if it ranks inside `capacity`, else removes itself. Two acquirers
-    racing at the exact same timestamp can both rank inside the cap for a
-    moment, which is an acceptable overshoot for a soft limit on a provider
-    that advertises none.
+    Acquisition runs as one Lua script (eviction, capacity check and insert
+    in a single atomic step), so two acquirers racing for the last slot
+    cannot both keep it, whatever order their requests reach Redis in. The
+    score is the acquirer's clock; runner instances are NTP-synced and the
+    TTL is minutes, so skew does not matter for eviction.
     """
 
     def __init__(
@@ -44,21 +44,29 @@ class ProviderSemaphore:
     def _key(self, scope: str) -> str:
         return f"{self.key_prefix}.{scope}"
 
+    # KEYS[1] = scope set; ARGV = now, holder ttl, capacity, holder id.
+    # Returns 1 when the holder took a slot, 0 when the scope was at capacity.
+    ACQUIRE_SCRIPT = """
+        local now = tonumber(ARGV[1])
+        local ttl = tonumber(ARGV[2])
+        local capacity = tonumber(ARGV[3])
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - ttl)
+        if redis.call('ZCARD', KEYS[1]) >= capacity then
+            return 0
+        end
+        redis.call('ZADD', KEYS[1], now, ARGV[4])
+        -- The set as a whole outlives its oldest possible live holder, so an
+        -- idle scope does not linger in Redis forever.
+        redis.call('EXPIRE', KEYS[1], ttl)
+        return 1
+    """
+
     async def _try_acquire(self, scope: str, holder_id: str) -> bool:
-        key = self._key(scope)
-        now = time.time()
-        pipe = self.redis_client.pipeline()
-        pipe.zremrangebyscore(key, "-inf", now - self.holder_ttl_seconds)
-        pipe.zadd(key, {holder_id: now})
-        pipe.zrank(key, holder_id)
-        # The set as a whole outlives its oldest possible live holder, so an
-        # idle scope does not linger in Redis forever.
-        pipe.expire(key, self.holder_ttl_seconds)
-        _, _, rank, _ = await pipe.execute()
-        if rank is not None and rank < self.capacity:
-            return True
-        await self.redis_client.zrem(key, holder_id)
-        return False
+        admitted = await self.redis_client.eval(
+            self.ACQUIRE_SCRIPT, 1, self._key(scope),
+            time.time(), self.holder_ttl_seconds, self.capacity, holder_id,
+        )
+        return bool(int(admitted))
 
     async def acquire(self, scope: str, holder_id: str, *, max_wait_seconds: Optional[float] = None) -> bool:
         """Take a slot in `scope`, waiting up to `max_wait_seconds` (the

@@ -5,57 +5,28 @@ import pytest
 from app.actions.concurrency import ProviderSemaphore
 
 
-class _FakePipeline:
-    def __init__(self, store):
-        self._store = store
-        self._ops = []
-
-    def __getattr__(self, name):
-        def queue(*args, **kwargs):
-            self._ops.append((name, args, kwargs))
-            return self
-        return queue
-
-    async def execute(self):
-        return [await getattr(self._store, name)(*args, **kwargs) for name, args, kwargs in self._ops]
-
-
 class _FakeRedis:
-    """The five sorted-set commands the semaphore relies on, with real semantics."""
+    """Stand-in for the one Redis call the semaphore makes: EVAL of its acquire
+    script. Implements the script's contract (evict stale holders, refuse when
+    the set is at capacity, otherwise insert) over an in-memory sorted set.
+    The real Lua is exercised in test_concurrency_redis.py."""
 
     def __init__(self):
         self.zsets = {}
 
-    def pipeline(self):
-        return _FakePipeline(self)
-
-    def _ordered(self, key):
-        return sorted(self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0]))
-
-    async def zremrangebyscore(self, key, min_score, max_score):
-        low = float("-inf") if min_score == "-inf" else float(min_score)
-        high = float("inf") if max_score == "+inf" else float(max_score)
-        zset = self.zsets.get(key, {})
-        stale = [m for m, s in zset.items() if low <= s <= high]
-        for m in stale:
-            del zset[m]
-        return len(stale)
-
-    async def zadd(self, key, mapping):
-        self.zsets.setdefault(key, {}).update(mapping)
-        return len(mapping)
-
-    async def zrank(self, key, member):
-        for rank, (m, _) in enumerate(self._ordered(key)):
-            if m == member:
-                return rank
-        return None
+    async def eval(self, script, numkeys, key, now, ttl, capacity, holder_id):
+        assert numkeys == 1
+        now, ttl, capacity = float(now), float(ttl), int(capacity)
+        zset = self.zsets.setdefault(key, {})
+        for member in [m for m, score in zset.items() if score <= now - ttl]:
+            del zset[member]
+        if len(zset) >= capacity:
+            return 0
+        zset[holder_id] = now
+        return 1
 
     async def zrem(self, key, member):
         return 1 if self.zsets.get(key, {}).pop(member, None) is not None else 0
-
-    async def expire(self, key, seconds):
-        return True
 
 
 def make_semaphore(redis, capacity=2, **overrides):
@@ -167,3 +138,22 @@ async def test_slot_context_manager_yields_false_and_releases_nothing_when_full(
 
     # collar-1's slot must still be held: the loser must not release it
     assert await semaphore.acquire("api.example.com", "collar-3") is False
+
+
+@pytest.mark.asyncio
+async def test_a_late_arriving_older_acquisition_cannot_squeeze_past_the_cap(mocker):
+    # Review on PR 10: the score is stamped client-side before Redis sees the
+    # request. A request stamped 1000.00 that reaches Redis after one stamped
+    # 1000.01 took the last slot must still be refused; ranking by score let
+    # both keep their slots for the whole run.
+    redis = _FakeRedis()
+    semaphore = make_semaphore(redis, capacity=1)
+    clock = mocker.patch("app.actions.concurrency.time.time")
+    clock.return_value = 1_000.01
+    assert await semaphore.acquire("api.example.com", "newer-request") is True
+
+    clock.return_value = 1_000.00
+    assert await semaphore.acquire("api.example.com", "older-request") is False
+
+    (members,) = redis.zsets.values()
+    assert set(members) == {"newer-request"}
