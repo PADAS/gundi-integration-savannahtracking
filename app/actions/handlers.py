@@ -2,7 +2,7 @@ import logging
 import random
 from datetime import datetime, timedelta, timezone
 
-from app.services.action_scheduler import crontab_schedule, trigger_action
+from app.services.action_scheduler import crontab_schedule, trigger_actions
 from app.services.activity_logger import activity_logger
 from app.services.gundi import send_observations_to_gundi
 from app.services.state import IntegrationStateManager
@@ -86,16 +86,21 @@ async def action_read_observations(integration, action_config: ReadObservationsC
         username=auth_config.username,
         password=auth_config.password.get_secret_value(),
     )
-    for collar_id in collar_ids:
-        await trigger_action(
-            integration_id=str(integration.id),
-            action_id=action_read_observations_per_collar.__name__[len("action_"):],
-            config=ReadObservationsPerCollarConfig(
+    # One batched publish for the whole fleet: publishing one command per
+    # collar in sequence took a new session and token each time, and the
+    # largest integrations (400+ collars) overran the request timeout.
+    await trigger_actions(
+        integration_id=str(integration.id),
+        action_id=action_read_observations_per_collar.__name__[len("action_"):],
+        configs=[
+            ReadObservationsPerCollarConfig(
                 collar_id=collar_id,
                 lookback_days=action_config.lookback_days,
                 subject_type=action_config.subject_type,
-            ),
-        )
+            )
+            for collar_id in collar_ids
+        ],
+    )
     return {"collars_triggered": len(collar_ids)}
 
 
