@@ -69,8 +69,8 @@ async def test_action_read_observations_triggers_subaction_per_collar(
     collar_ids = ["ST2010-3034", "ST2010-3035", "ST2010-3036"]
     mock_get_collar_list = AsyncMock(return_value=collar_ids)
     mocker.patch("app.actions.handlers.client.get_collar_list", mock_get_collar_list)
-    mock_trigger_action = AsyncMock()
-    mocker.patch("app.actions.handlers.trigger_action", mock_trigger_action)
+    mock_trigger_actions = AsyncMock()
+    mocker.patch("app.actions.handlers.trigger_actions", mock_trigger_actions)
     from app.actions.handlers import action_read_observations
 
     result = await action_read_observations(
@@ -83,15 +83,17 @@ async def test_action_read_observations_triggers_subaction_per_collar(
     assert call_kwargs["username"] == "testuser"
     assert call_kwargs["password"] == "testpassword"
     assert call_kwargs["base_url"] == "https://api.savannahtracking.co.ke"
-    assert mock_trigger_action.call_count == 3
-    triggered_configs = [c.kwargs["config"] for c in mock_trigger_action.call_args_list]
+    # One batched publish for the whole fleet, not one PubSub round trip per
+    # collar: the 437-collar integration overran Cloud Run's request timeout
+    # publishing sequentially.
+    mock_trigger_actions.assert_called_once()
+    trigger_kwargs = mock_trigger_actions.call_args.kwargs
+    assert trigger_kwargs["integration_id"] == str(savannah_integration.id)
+    assert trigger_kwargs["action_id"] == "read_observations_per_collar"
+    triggered_configs = trigger_kwargs["configs"]
     assert [config.collar_id for config in triggered_configs] == collar_ids
     assert all(config.lookback_days == 3 for config in triggered_configs)
     assert all(config.subject_type == "unassigned" for config in triggered_configs)
-    assert all(
-        c.kwargs["action_id"] == "read_observations_per_collar"
-        for c in mock_trigger_action.call_args_list
-    )
 
 
 @pytest.mark.asyncio
