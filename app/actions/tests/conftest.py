@@ -1,6 +1,7 @@
 import copy
 
 import pytest
+from contextlib import asynccontextmanager
 from gundi_core.schemas.v2 import Integration
 
 from app.conftest import async_return
@@ -101,3 +102,29 @@ def mock_state_manager_empty(mocker):
 @pytest.fixture
 def mock_publish_event(mocker):
     return mocker.patch("app.services.activity_logger.publish_event", return_value=async_return(None))
+
+
+class FakeProviderSemaphore:
+    """Test double for app.actions.concurrency.ProviderSemaphore: records the
+    scopes asked for and answers `acquired` without touching Redis."""
+
+    def __init__(self, acquired=True):
+        self.acquired = acquired
+        self.slots_requested = []
+        self.slots_released = 0
+
+    @asynccontextmanager
+    async def slot(self, scope, holder_id):
+        self.slots_requested.append((scope, holder_id))
+        try:
+            yield self.acquired
+        finally:
+            if self.acquired:
+                self.slots_released += 1
+
+
+@pytest.fixture(autouse=True)
+def provider_semaphore(mocker):
+    fake = FakeProviderSemaphore()
+    mocker.patch("app.actions.handlers.provider_semaphore", fake)
+    return fake

@@ -284,6 +284,48 @@ async def test_action_read_observations_per_collar_skips_when_another_run_holds_
     mock_state_manager_empty.delete_state.assert_not_called()
 
 
+
+@pytest.mark.asyncio
+async def test_action_read_observations_per_collar_skips_when_the_provider_cap_is_reached(
+        mocker, mock_publish_event, savannah_integration, mock_state_manager_empty, provider_semaphore
+):
+    provider_semaphore.acquired = False
+    mock_get_collar_data_page = AsyncMock()
+    mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
+    mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
+    from app.actions.handlers import action_read_observations_per_collar
+
+    result = await action_read_observations_per_collar(
+        savannah_integration,
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+    )
+
+    assert result["skipped"] is True
+    assert "concurren" in result["reason"].lower()
+    mock_get_collar_data_page.assert_not_called()
+    # This run took the per-collar lock, so it must give it back for the next schedule
+    mock_state_manager_empty.delete_state.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_action_read_observations_per_collar_holds_a_slot_scoped_to_the_provider_host(
+        mocker, mock_publish_event, savannah_integration, mock_state_manager_empty, provider_semaphore
+):
+    mock_get_collar_data_page = AsyncMock(return_value=([], False, None))
+    mocker.patch("app.actions.handlers.client.get_collar_data_page", mock_get_collar_data_page)
+    mocker.patch("app.actions.handlers.state_manager", mock_state_manager_empty)
+    from app.actions.handlers import action_read_observations_per_collar
+
+    await action_read_observations_per_collar(
+        savannah_integration,
+        ReadObservationsPerCollarConfig(collar_id="ST2010-3034", lookback_days=3),
+    )
+
+    assert provider_semaphore.slots_requested == [
+        ("api.savannahtracking.co.ke", f"{savannah_integration.id}:ST2010-3034")
+    ]
+    assert provider_semaphore.slots_released == 1
+
 @pytest.mark.asyncio
 async def test_action_read_observations_per_collar_skips_during_backoff(
         mocker, mock_publish_event, savannah_integration, mock_state_manager_empty

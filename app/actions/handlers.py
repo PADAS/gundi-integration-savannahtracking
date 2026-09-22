@@ -1,15 +1,21 @@
 import logging
 import random
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from app.services.action_scheduler import crontab_schedule, trigger_actions
 from app.services.activity_logger import activity_logger
 from app.services.gundi import send_observations_to_gundi
 from app.services.state import IntegrationStateManager
 from app.services.utils import generate_batches
-from app.settings import MAX_ACTION_EXECUTION_TIME
+from app.settings import (
+    MAX_ACTION_EXECUTION_TIME,
+    SAVANNAH_CONCURRENCY_MAX_WAIT_SECONDS,
+    SAVANNAH_MAX_CONCURRENT_REQUESTS,
+)
 
 from . import client
+from .concurrency import ProviderSemaphore
 from .configurations import (
     CredentialsConfig,
     ReadObservationsConfig,
@@ -34,6 +40,15 @@ BACKOFF_TTL_RANGE_SECONDS = (76000, 96000)
 # TTL outlasts the longest possible run in case the holder dies without
 # releasing it.
 LOCK_TTL_SECONDS = MAX_ACTION_EXECUTION_TIME + 60
+# Slots against the provider are shared by every runner instance (see
+# ProviderSemaphore). A holder that dies mid-run is evicted on the same TTL
+# as the per-collar lock.
+provider_semaphore = ProviderSemaphore(
+    capacity=SAVANNAH_MAX_CONCURRENT_REQUESTS,
+    holder_ttl_seconds=LOCK_TTL_SECONDS,
+    max_wait_seconds=SAVANNAH_CONCURRENCY_MAX_WAIT_SECONDS,
+    redis_client=state_manager.db_client,
+)
 
 
 def _get_base_url(integration) -> str:
@@ -131,7 +146,19 @@ async def action_read_observations_per_collar(integration, action_config: ReadOb
         logger.info(f"Another run for collar {collar_id} is still in progress. Skipping.")
         return {"collar_id": collar_id, "skipped": True, "reason": "Another run for this collar is still in progress"}
     try:
-        return await _read_collar_observations(integration, action_config)
+        provider_host = urlparse(_get_base_url(integration)).netloc
+        async with provider_semaphore.slot(provider_host, f"{integration_id}:{collar_id}") as acquired:
+            if not acquired:
+                logger.info(
+                    f"Collar {collar_id}: no slot against {provider_host} freed within "
+                    f"{SAVANNAH_CONCURRENCY_MAX_WAIT_SECONDS:.0f}s. Skipping until the next schedule."
+                )
+                return {
+                    "collar_id": collar_id,
+                    "skipped": True,
+                    "reason": "Provider concurrency cap reached; will retry on the next schedule",
+                }
+            return await _read_collar_observations(integration, action_config)
     finally:
         await state_manager.delete_state(integration_id, LOCK_STATE_ACTION_ID, collar_id)
 
